@@ -9,7 +9,6 @@ on:
 jobs:
   build-arm64:
     runs-on: ubuntu-latest
-
     env:
       VSCODE_PLATFORM: linux
       VSCODE_ARCH: arm64
@@ -54,24 +53,27 @@ jobs:
             ca-certificates \
             git \
             curl
-          # show versions for debugging
           gcc --version || true
           g++ --version || true
           python3 --version || true
 
-      - name: Clean workspace and npm cache (avoid ENOTEMPTY & stale modules)
+      - name: Clean workspace (remove stray node_modules only) and npm cache
         run: |
-          echo "Removing possible leftover node_modules and lock files"
+          echo "Removing node_modules only; do NOT remove package-lock.json if present"
           rm -rf node_modules || true
-          rm -rf package-lock.json node_modules .npm/_locks || true
           npm cache clean --force || true
-          # Ensure no stubborn native-keymap dir remains
+          # attempt to remove stubborn dir that caused ENOTEMPTY previously
           rm -rf node_modules/native-keymap || true
 
-      - name: Install npm dependencies
+      - name: Install npm dependencies (use ci when lockfile exists)
         run: |
-          echo "Running npm ci"
-          npm ci
+          if [ -f package-lock.json ]; then
+            echo "package-lock.json found → running npm ci"
+            npm ci --prefer-offline --no-audit --no-fund
+          else
+            echo "package-lock.json NOT found → running npm install"
+            npm install --prefer-offline --no-audit --no-fund
+          fi
 
       - name: Build VS Code (linux-arm64)
         run: |
