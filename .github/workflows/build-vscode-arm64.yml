@@ -11,46 +11,61 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      VSCODE_ARCH: arm64
       VSCODE_PLATFORM: linux
+      VSCODE_ARCH: arm64
 
     steps:
-      - name: Checkout source
+      # 1. Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js (matching VS Code)
+      # 2. Setup Node.js 22 (WAJIB untuk VS Code modern)
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18.x
-          cache: 'npm'
+          node-version: 22.x
+          cache: npm
 
-      - name: Install dependencies
+      # 3. Verifikasi versi (debug-friendly)
+      - name: Verify Node & npm
+        run: |
+          node -v
+          npm -v
+
+      # 4. Install dependency OS untuk build Electron
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libx11-dev \
             libxkbfile-dev \
             libsecret-1-dev \
-            fakeroot \
-            rpm \
             libgtk-3-dev \
             libnss3-dev \
-            libasound2-dev
+            libasound2-dev \
+            fakeroot \
+            rpm \
+            python3 \
+            make \
+            g++
 
-      - name: Install npm deps
+      # 5. Install npm dependencies (STRICT, no hacks)
+      - name: Install npm dependencies
         run: npm ci
 
-      - name: Build VS Code (ARM64)
+      # 6. Build VS Code Linux ARM64
+      - name: Build VS Code (linux-arm64)
         run: |
-          npm run gulp -- \
-            vscode-linux-arm64-min
+          npm run gulp -- vscode-linux-arm64-min
 
-      - name: Package result
+      # 7. Package hasil build
+      - name: Package build output
         run: |
           mkdir -p out
           cp -r .build/linux-arm64 out/vscode-linux-arm64
           tar -czf vscode-linux-arm64.tar.gz -C out vscode-linux-arm64
 
+      # 8. Upload artifact (langsung bisa di-download)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
