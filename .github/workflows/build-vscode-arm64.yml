@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,7 +13,7 @@ jobs:
       NODE_OPTIONS: "--max-old-space-size=12288"
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: true
@@ -22,6 +22,24 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22.x'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            python3 \
+            python3-dev \
+            libkrb5-dev \
+            pkg-config \
+            libx11-dev \
+            libxkbfile-dev \
+            libsecret-1-dev \
+            libgtk-3-dev \
+            libnss3-dev \
+            libasound2-dev \
+            curl \
+            git
 
       - name: Cache node_modules & gulp cache
         uses: actions/cache@v4
@@ -33,7 +51,7 @@ jobs:
             .gulp-cache
           key: vscode-arm64-${{ hashFiles('package-lock.json') }}
 
-      - name: Install dependencies
+      - name: Install npm dependencies
         run: npm ci
 
       - name: Build VS Code (non-minified / fast)
