@@ -20,10 +20,10 @@ jobs:
         with:
           submodules: true
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.x'
 
       - name: Cache node_modules & gulp cache
         uses: actions/cache@v4
@@ -41,24 +41,18 @@ jobs:
       - name: Build VS Code (non-minified / fast)
         run: npm run gulp vscode-linux-arm64
 
-      - name: Optional: Build VS Code minified (release)
-        if: github.event_name == 'workflow_dispatch'
-        run: npm run gulp vscode-linux-arm64-min
-
-      - name: Inspect build output
+      - name: Compress build output
         run: |
-          echo "Contents of .build:"
-          ls -lah .build
-
-      - name: Verify build output exists
-        run: |
-          if [ -z "$(ls -A .build)" ]; then
-            echo "ERROR: Build output missing!"
+          if [ -d ".build" ]; then
+            tar -czf vscode-linux-arm64.tar.gz -C .build .
+          else
+            echo "ERROR: .build folder missing!" >&2
+            ls -la || true
             exit 1
           fi
 
-      - name: Upload build artifact
+      - name: Upload compressed build artifact
         uses: actions/upload-artifact@v4
         with:
           name: vscode-linux-arm64
-          path: .build/**
+          path: vscode-linux-arm64.tar.gz
