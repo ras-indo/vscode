@@ -2,11 +2,12 @@ name: Build VS Code ARM64
 
 on:
   push:
+    branches:
+      - main
     paths:
       - 'src/**'
       - 'extensions/**'
       - 'gulpfile.mjs'
-  workflow_dispatch:
 
 jobs:
   build:
