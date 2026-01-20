@@ -15,28 +15,34 @@ jobs:
       VSCODE_ARCH: arm64
 
     steps:
-      # 1. Checkout source
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Setup Node.js 22 (WAJIB untuk VS Code modern)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22.x
           cache: npm
 
-      # 3. Verifikasi versi (debug-friendly)
       - name: Verify Node & npm
         run: |
+          echo "=== node & npm versions ==="
           node -v
           npm -v
+          echo "=== uname -a ==="
+          uname -a
 
-      # 4. Install dependency OS untuk build Electron
-      - name: Install system dependencies
+      - name: Install system dependencies (including Kerberos dev headers)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            make \
+            g++ \
+            python3 \
+            python3-dev \
+            pkg-config \
+            libkrb5-dev \
             libx11-dev \
             libxkbfile-dev \
             libsecret-1-dev \
@@ -45,27 +51,44 @@ jobs:
             libasound2-dev \
             fakeroot \
             rpm \
-            python3 \
-            make \
-            g++
+            ca-certificates \
+            git \
+            curl
+          # show versions for debugging
+          gcc --version || true
+          g++ --version || true
+          python3 --version || true
 
-      # 5. Install npm dependencies (STRICT, no hacks)
+      - name: Clean workspace and npm cache (avoid ENOTEMPTY & stale modules)
+        run: |
+          echo "Removing possible leftover node_modules and lock files"
+          rm -rf node_modules || true
+          rm -rf package-lock.json node_modules .npm/_locks || true
+          npm cache clean --force || true
+          # Ensure no stubborn native-keymap dir remains
+          rm -rf node_modules/native-keymap || true
+
       - name: Install npm dependencies
-        run: npm ci
+        run: |
+          echo "Running npm ci"
+          npm ci
 
-      # 6. Build VS Code Linux ARM64
       - name: Build VS Code (linux-arm64)
         run: |
           npm run gulp -- vscode-linux-arm64-min
 
-      # 7. Package hasil build
       - name: Package build output
         run: |
           mkdir -p out
-          cp -r .build/linux-arm64 out/vscode-linux-arm64
-          tar -czf vscode-linux-arm64.tar.gz -C out vscode-linux-arm64
+          cp -r .build/linux-arm64 out/vscode-linux-arm64 || true
+          if [ -d out/vscode-linux-arm64 ]; then
+            tar -czf vscode-linux-arm64.tar.gz -C out vscode-linux-arm64
+          else
+            echo "ERROR: expected .build/linux-arm64 missing" >&2
+            ls -la .build || true
+            false
+          fi
 
-      # 8. Upload artifact (langsung bisa di-download)
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
