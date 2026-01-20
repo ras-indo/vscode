@@ -8,8 +8,6 @@ import { isFirefox } from '../../../../../base/browser/browser.js';
 import { addDisposableListener, getActiveElement, getWindow, getWindowId, scheduleAtNextAnimationFrame } from '../../../../../base/browser/dom.js';
 import { FastDomNode } from '../../../../../base/browser/fastDomNode.js';
 import { StandardKeyboardEvent } from '../../../../../base/browser/keyboardEvent.js';
-import { StandardMouseEvent } from '../../../../../base/browser/mouseEvent.js';
-import { Gesture } from '../../../../../base/browser/touch.js';
 import { KeyCode } from '../../../../../base/common/keyCodes.js';
 import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -75,16 +73,6 @@ export class NativeEditContext extends AbstractEditContext {
 
 	private readonly _focusTracker: FocusTracker;
 
-	// Untuk penanganan touch events
-	private _isTouchActive: boolean = false;
-	private _touchStartPosition: { x: number; y: number } | null = null;
-	private _touchStartTime: number = 0;
-	private _lastTapTime: number = 0;
-	private _lastTapPosition: { x: number; y: number } | null = null;
-	private _touchGesture: Gesture | undefined;
-	private _isScrolling: boolean = false;
-	private _touchMoveThreshold: number = 10;
-
 	constructor(
 		ownerID: string,
 		context: ViewContext,
@@ -99,11 +87,10 @@ export class NativeEditContext extends AbstractEditContext {
 		this.domNode = new FastDomNode(document.createElement('div'));
 		this.domNode.setClassName(`native-edit-context`);
 		
-		// Set CSS untuk touch optimization
+		// Optimasi untuk touch devices
 		this.domNode.domNode.style.touchAction = 'manipulation';
-		this.domNode.domNode.style.webkitTapHighlightColor = 'transparent';
-		this.domNode.domNode.style.webkitUserSelect = 'none';
 		this.domNode.domNode.style.userSelect = 'none';
+		this.domNode.domNode.style.webkitUserSelect = 'none';
 		
 		this._imeTextArea = new FastDomNode(document.createElement('textarea'));
 		this._imeTextArea.setClassName(`ime-text-area`);
@@ -133,11 +120,8 @@ export class NativeEditContext extends AbstractEditContext {
 
 		this._screenReaderSupport = this._register(instantiationService.createInstance(ScreenReaderSupport, this.domNode, context, this._viewController));
 
-		// Inisialisasi gesture handler untuk touch
-		this._touchGesture = new Gesture(this.domNode.domNode);
-
-		// --- Touch Events Handler untuk Mobile ---
-		this._registerTouchEvents();
+		// --- Pointer Events Handler untuk Mobile dan Desktop ---
+		this._registerPointerEvents();
 
 		this._register(addDisposableListener(this.domNode.domNode, 'copy', (e) => {
 			this.logService.trace('NativeEditContext#copy');
@@ -274,12 +258,24 @@ export class NativeEditContext extends AbstractEditContext {
 		this._register(NativeEditContextRegistry.register(ownerID, this));
 	}
 
-	// --- Private methods untuk touch events pada mobile ---
-	private _registerTouchEvents(): void {
-		// Gunakan pointer events untuk semua platform
-		this._registerPointerEvents();
+	// --- Pointer Events Handler yang Sederhana ---
+	private _registerPointerEvents(): void {
+		// Pointer down untuk fokus dan interaksi dasar
+		this._register(addDisposableListener(this.domNode.domNode, 'pointerdown', (e) => {
+			this._handlePointerDown(e);
+		}));
 
-		// Tambahan touch events untuk mobile
+		// Pointer move untuk drag selection (jika diperlukan)
+		this._register(addDisposableListener(this.domNode.domNode, 'pointermove', (e) => {
+			this._handlePointerMove(e);
+		}));
+
+		// Pointer up
+		this._register(addDisposableListener(this.domNode.domNode, 'pointerup', (e) => {
+			this._handlePointerUp(e);
+		}));
+
+		// Touch events untuk mobile
 		this._register(addDisposableListener(this.domNode.domNode, 'touchstart', (e) => {
 			this._handleTouchStart(e);
 		}, { passive: true }));
@@ -292,278 +288,60 @@ export class NativeEditContext extends AbstractEditContext {
 			this._handleTouchEnd(e);
 		}, { passive: true }));
 
-		this._register(addDisposableListener(this.domNode.domNode, 'touchcancel', (e) => {
-			this._handleTouchCancel(e);
-		}, { passive: true }));
-
+		// Context menu
 		this._register(addDisposableListener(this.domNode.domNode, 'contextmenu', (e) => {
-			this._handleContextMenu(e);
-		}));
-
-		this._register(addDisposableListener(this.domNode.domNode, 'gesturestart', (e) => {
 			e.preventDefault();
 		}));
-
-		this._register(addDisposableListener(this.domNode.domNode, 'gesturechange', (e) => {
-			e.preventDefault();
-		}));
-
-		// Gesture events
-		if (this._touchGesture) {
-			this._register(this._touchGesture.onTap((event) => this._handleTap(event)));
-			this._register(this._touchGesture.onDoubleTap((event) => this._handleDoubleTap(event)));
-			this._register(this._touchGesture.onLongPress((event) => this._handleLongPress(event)));
-		}
-	}
-
-	private _registerPointerEvents(): void {
-		// Pointer events untuk semua platform
-		this._register(addDisposableListener(this.domNode.domNode, 'pointerdown', (e) => {
-			this._handlePointerDown(e);
-		}));
-
-		this._register(addDisposableListener(this.domNode.domNode, 'pointermove', (e) => {
-			this._handlePointerMove(e);
-		}));
-
-		this._register(addDisposableListener(this.domNode.domNode, 'pointerup', (e) => {
-			this._handlePointerUp(e);
-		}));
-
-		this._register(addDisposableListener(this.domNode.domNode, 'pointercancel', (e) => {
-			this._handlePointerCancel(e);
-		}));
-
-		this._register(addDisposableListener(this.domNode.domNode, 'pointerleave', (e) => {
-			this._handlePointerLeave(e);
-		}));
-	}
-
-	private _handleTouchStart(e: TouchEvent): void {
-		if (e.touches.length > 1) {
-			return;
-		}
-
-		this._isTouchActive = true;
-		const touch = e.touches[0];
-		this._touchStartPosition = { x: touch.clientX, y: touch.clientY };
-		this._touchStartTime = Date.now();
-		this._isScrolling = false;
-
-		if (!this.isFocused()) {
-			this.focus();
-		}
-
-		const mouseEvent = this._createMouseEventFromTouch('mousedown', touch);
-		this._dispatchMouseEvent(mouseEvent);
-	}
-
-	private _handleTouchMove(e: TouchEvent): void {
-		if (!this._isTouchActive || e.touches.length > 1) {
-			return;
-		}
-
-		const touch = e.touches[0];
-		
-		if (this._touchStartPosition) {
-			const deltaX = Math.abs(touch.clientX - this._touchStartPosition.x);
-			const deltaY = Math.abs(touch.clientY - this._touchStartPosition.y);
-			
-			if (deltaX > this._touchMoveThreshold || deltaY > this._touchMoveThreshold) {
-				this._isScrolling = true;
-				
-				const mouseEvent = this._createMouseEventFromTouch('mousemove', touch);
-				this._dispatchMouseEvent(mouseEvent);
-				
-				this._touchStartPosition = { x: touch.clientX, y: touch.clientY };
-			}
-		}
-	}
-
-	private _handleTouchEnd(e: TouchEvent): void {
-		if (!this._isTouchActive) {
-			return;
-		}
-
-		this._isTouchActive = false;
-		
-		if (!this._isScrolling && this._touchStartPosition && e.changedTouches.length > 0) {
-			const touch = e.changedTouches[0];
-			const currentTime = Date.now();
-			const tapDuration = currentTime - this._touchStartTime;
-			
-			if (tapDuration < 300) {
-				this._handleTapAtPosition(touch.clientX, touch.clientY, currentTime);
-			}
-			
-			const mouseEvent = this._createMouseEventFromTouch('mouseup', touch);
-			this._dispatchMouseEvent(mouseEvent);
-		}
-		
-		this._touchStartPosition = null;
-		this._isScrolling = false;
-	}
-
-	private _handleTouchCancel(e: TouchEvent): void {
-		this._isTouchActive = false;
-		this._touchStartPosition = null;
-		this._isScrolling = false;
-		
-		if (e.changedTouches.length > 0) {
-			const mouseEvent = this._createMouseEventFromTouch('mousecancel', e.changedTouches[0]);
-			this._dispatchMouseEvent(mouseEvent);
-		}
-	}
-
-	private _handleTap(event: any): void {
-		this.logService.trace('NativeEditContext#tap');
-		
-		if (!this.isFocused()) {
-			this.focus();
-		}
-	}
-
-	private _handleDoubleTap(event: any): void {
-		this.logService.trace('NativeEditContext#doubleTap');
-		
-		if (!this.isFocused()) {
-			this.focus();
-		}
-		
-		// Trigger word selection - gunakan API yang tersedia
-		this._viewController.wordSelectDrag();
-	}
-
-	private _handleLongPress(event: any): void {
-		this.logService.trace('NativeEditContext#longPress');
-		
-		if (!this.isFocused()) {
-			this.focus();
-		}
-		
-		// Trigger context menu atau mulai drag selection
-		this._viewController.lineSelectDrag();
-	}
-
-	private _handleTapAtPosition(x: number, y: number, currentTime: number): void {
-		if (this._lastTapTime && this._lastTapPosition) {
-			const timeDiff = currentTime - this._lastTapTime;
-			const distance = Math.sqrt(
-				Math.pow(x - this._lastTapPosition.x, 2) + 
-				Math.pow(y - this._lastTapPosition.y, 2)
-			);
-			
-			if (timeDiff < 500 && distance < 50) {
-				this._handleDoubleTap({});
-				this._lastTapTime = 0;
-				this._lastTapPosition = null;
-				return;
-			}
-		}
-		
-		this._lastTapTime = currentTime;
-		this._lastTapPosition = { x, y };
-	}
-
-	private _handleContextMenu(e: Event): void {
-		// Prevent default context menu
-		e.preventDefault();
-		
-		// Tampilkan custom context menu untuk editor
-		// Method showContextMenu tidak tersedia, jadi kita gunakan dispatchMouse
-		// dengan event yang tepat untuk memicu context menu
-	}
-
-	private _createMouseEventFromTouch(type: string, touch: Touch): MouseEvent {
-		// Buat mouse event synthetic dari touch event
-		const mouseEventInit: MouseEventInit = {
-			clientX: touch.clientX,
-			clientY: touch.clientY,
-			screenX: touch.screenX,
-			screenY: touch.screenY,
-			button: 0,
-			buttons: 1,
-			ctrlKey: false,
-			shiftKey: false,
-			altKey: false,
-			metaKey: false
-		};
-		
-		return new MouseEvent(type, mouseEventInit);
-	}
-
-	private _dispatchMouseEvent(mouseEvent: MouseEvent): void {
-		const standardMouseEvent = new StandardMouseEvent(mouseEvent);
-		// Perlu membuat data dispatch yang sesuai
-		const editorMouseEvent = {
-			event: standardMouseEvent,
-			target: this.domNode.domNode
-		};
-		// Method dispatchMouse mungkin memerlukan parameter yang berbeda
-		// Coba gunakan metode yang tersedia di ViewController
-		this._viewController.dispatchMouse(editorMouseEvent);
 	}
 
 	private _handlePointerDown(e: PointerEvent): void {
-		const mouseEvent = new StandardMouseEvent(e);
-		const editorMouseEvent = {
-			event: mouseEvent,
-			target: this.domNode.domNode
-		};
-		this._viewController.dispatchMouse(editorMouseEvent);
-		
-		if (e.button === 0) {
-			e.preventDefault();
-			e.stopPropagation();
+		// Fokus ke edit context saat pointer down
+		if (!this.isFocused()) {
+			this.focus();
 		}
+		
+		// Untuk touch devices, biarkan EditContext menangani seleksi
+		if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+			// EditContext akan menangani seleksi untuk touch/pen
+			return;
+		}
+		
+		// Untuk mouse, kita bisa menangani klik untuk positioning cursor
+		// Tapi biarkan EditContext menangani seleksi utama
 	}
 
 	private _handlePointerMove(e: PointerEvent): void {
-		const mouseEvent = new StandardMouseEvent(e);
-		const editorMouseEvent = {
-			event: mouseEvent,
-			target: this.domNode.domNode
-		};
-		this._viewController.dispatchMouse(editorMouseEvent);
-		
-		if (e.buttons & 1) {
-			e.preventDefault();
-			e.stopPropagation();
-		}
+		// Tidak perlu menangani pointer move untuk seleksi
+		// Biarkan EditContext menangani
 	}
 
 	private _handlePointerUp(e: PointerEvent): void {
-		const mouseEvent = new StandardMouseEvent(e);
-		const editorMouseEvent = {
-			event: mouseEvent,
-			target: this.domNode.domNode
-		};
-		this._viewController.dispatchMouse(editorMouseEvent);
+		// Tidak perlu tindakan khusus
+	}
+
+	private _handleTouchStart(e: TouchEvent): void {
+		// Fokus saat touch start
+		if (!this.isFocused()) {
+			this.focus();
+		}
 		
-		if (e.button === 0) {
-			e.preventDefault();
-			e.stopPropagation();
+		// Mencegah zoom yang tidak diinginkan
+		if (e.touches.length > 1) {
+			return;
 		}
 	}
 
-	private _handlePointerCancel(e: PointerEvent): void {
-		const mouseEvent = new StandardMouseEvent(e);
-		const editorMouseEvent = {
-			event: mouseEvent,
-			target: this.domNode.domNode
-		};
-		this._viewController.dispatchMouse(editorMouseEvent);
+	private _handleTouchMove(e: TouchEvent): void {
+		// Biarkan EditContext menangani seleksi touch
+		// Mencegah default behavior yang bisa mengganggu
+		e.preventDefault();
 	}
 
-	private _handlePointerLeave(e: PointerEvent): void {
-		// Reset state saat pointer meninggalkan area
+	private _handleTouchEnd(e: TouchEvent): void {
+		// Tidak perlu tindakan khusus
 	}
 
 	public override dispose(): void {
-		// Hapus gesture handler
-		this._touchGesture?.dispose();
-		
-		// Force blue the dom node so can write in pane with no native edit context after disposal
 		this.domNode.domNode.editContext = undefined;
 		this.domNode.domNode.blur();
 		this.domNode.domNode.remove();
@@ -705,7 +483,7 @@ export class NativeEditContext extends AbstractEditContext {
 		const options = this._context.configuration.options;
 		this.domNode.domNode.setAttribute('tabindex', String(options.get(EditorOption.tabIndex)));
 		
-		// Tambahan untuk mobile optimization
+		// Optimasi untuk mobile
 		this.domNode.domNode.setAttribute('inputmode', 'text');
 	}
 
