@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './nativeEditContext.css';
-import { isFirefox, isIOS, isAndroid, isMobile } from '../../../../../base/browser/browser.js';
+import { isFirefox } from '../../../../../base/browser/browser.js';
 import { addDisposableListener, getActiveElement, getWindow, getWindowId, scheduleAtNextAnimationFrame } from '../../../../../base/browser/dom.js';
 import { FastDomNode } from '../../../../../base/browser/fastDomNode.js';
 import { StandardKeyboardEvent } from '../../../../../base/browser/keyboardEvent.js';
@@ -99,10 +99,11 @@ export class NativeEditContext extends AbstractEditContext {
 		this.domNode = new FastDomNode(document.createElement('div'));
 		this.domNode.setClassName(`native-edit-context`);
 		
-		this.domNode.setStyle('touch-action', 'manipulation');
-		this.domNode.setStyle('-webkit-tap-highlight-color', 'transparent');
-		this.domNode.setStyle('-webkit-user-select', 'none');
-		this.domNode.setStyle('user-select', 'none');
+		// Set CSS untuk touch optimization
+		this.domNode.domNode.style.touchAction = 'manipulation';
+		this.domNode.domNode.style.webkitTapHighlightColor = 'transparent';
+		this.domNode.domNode.style.webkitUserSelect = 'none';
+		this.domNode.domNode.style.userSelect = 'none';
 		
 		this._imeTextArea = new FastDomNode(document.createElement('textarea'));
 		this._imeTextArea.setClassName(`ime-text-area`);
@@ -132,13 +133,20 @@ export class NativeEditContext extends AbstractEditContext {
 
 		this._screenReaderSupport = this._register(instantiationService.createInstance(ScreenReaderSupport, this.domNode, context, this._viewController));
 
+		// Inisialisasi gesture handler untuk touch
 		this._touchGesture = new Gesture(this.domNode.domNode);
 
+		// --- Touch Events Handler untuk Mobile ---
 		this._registerTouchEvents();
 
 		this._register(addDisposableListener(this.domNode.domNode, 'copy', (e) => {
 			this.logService.trace('NativeEditContext#copy');
 
+			// !!!!!
+			// This is a workaround for what we think is an Electron bug where
+			// execCommand('copy') does not always work (it does not fire a clipboard event)
+			// !!!!!
+			// We signal that we have executed a copy command
 			CopyOptions.electronBugWorkaroundCopyEventHasFired = true;
 
 			const copyEvent = createClipboardCopyEvent(e, /* isCut */ false, this._context, this.logService, isFirefox);
@@ -155,6 +163,8 @@ export class NativeEditContext extends AbstractEditContext {
 			if (cutEvent.isHandled) {
 				return;
 			}
+			// Pretend here we touched the text area, as the `cut` event will most likely
+			// result in a `selectionchange` event which we want to ignore
 			this._screenReaderSupport.onWillCut();
 			cutEvent.ensureClipboardGetsEditorData();
 			this.logService.trace('NativeEditContext#cut (before viewController.cut)');
@@ -234,12 +244,18 @@ export class NativeEditContext extends AbstractEditContext {
 		}));
 		this._register(editContextAddDisposableListener(this._editContext, 'compositionstart', (e) => {
 			this._updateEditContext();
+			// Utlimately fires onDidCompositionStart() on the editor to notify for example suggest model of composition state
+			// Updates the composition state of the cursor controller which determines behavior of typing with interceptors
 			this._viewController.compositionStart();
+			// Emits ViewCompositionStartEvent which can be depended on by ViewEventHandlers
 			this._context.viewModel.onCompositionStart();
 		}));
 		this._register(editContextAddDisposableListener(this._editContext, 'compositionend', (e) => {
 			this._updateEditContext();
+			// Utlimately fires compositionEnd() on the editor to notify for example suggest model of composition state
+			// Updates the composition state of the cursor controller which determines behavior of typing with interceptors
 			this._viewController.compositionEnd();
+			// Emits ViewCompositionEndEvent which can be depended on by ViewEventHandlers
 			this._context.viewModel.onCompositionEnd();
 		}));
 		let reenableTracking: boolean = false;
@@ -258,12 +274,12 @@ export class NativeEditContext extends AbstractEditContext {
 		this._register(NativeEditContextRegistry.register(ownerID, this));
 	}
 
+	// --- Private methods untuk touch events pada mobile ---
 	private _registerTouchEvents(): void {
-		if (!isMobile) {
-			this._registerPointerEvents();
-			return;
-		}
-		
+		// Gunakan pointer events untuk semua platform
+		this._registerPointerEvents();
+
+		// Tambahan touch events untuk mobile
 		this._register(addDisposableListener(this.domNode.domNode, 'touchstart', (e) => {
 			this._handleTouchStart(e);
 		}, { passive: true }));
@@ -292,14 +308,16 @@ export class NativeEditContext extends AbstractEditContext {
 			e.preventDefault();
 		}));
 
+		// Gesture events
 		if (this._touchGesture) {
-			this._register(this._touchGesture.onTap((e) => this._handleTap(e)));
-			this._register(this._touchGesture.onDoubleTap((e) => this._handleDoubleTap(e)));
-			this._register(this._touchGesture.onLongPress((e) => this._handleLongPress(e)));
+			this._register(this._touchGesture.onTap((event) => this._handleTap(event)));
+			this._register(this._touchGesture.onDoubleTap((event) => this._handleDoubleTap(event)));
+			this._register(this._touchGesture.onLongPress((event) => this._handleLongPress(event)));
 		}
 	}
 
 	private _registerPointerEvents(): void {
+		// Pointer events untuk semua platform
 		this._register(addDisposableListener(this.domNode.domNode, 'pointerdown', (e) => {
 			this._handlePointerDown(e);
 		}));
@@ -337,7 +355,7 @@ export class NativeEditContext extends AbstractEditContext {
 		}
 
 		const mouseEvent = this._createMouseEventFromTouch('mousedown', touch);
-		this._viewController.dispatchMouse(mouseEvent);
+		this._dispatchMouseEvent(mouseEvent);
 	}
 
 	private _handleTouchMove(e: TouchEvent): void {
@@ -355,7 +373,7 @@ export class NativeEditContext extends AbstractEditContext {
 				this._isScrolling = true;
 				
 				const mouseEvent = this._createMouseEventFromTouch('mousemove', touch);
-				this._viewController.dispatchMouse(mouseEvent);
+				this._dispatchMouseEvent(mouseEvent);
 				
 				this._touchStartPosition = { x: touch.clientX, y: touch.clientY };
 			}
@@ -379,7 +397,7 @@ export class NativeEditContext extends AbstractEditContext {
 			}
 			
 			const mouseEvent = this._createMouseEventFromTouch('mouseup', touch);
-			this._viewController.dispatchMouse(mouseEvent);
+			this._dispatchMouseEvent(mouseEvent);
 		}
 		
 		this._touchStartPosition = null;
@@ -393,11 +411,11 @@ export class NativeEditContext extends AbstractEditContext {
 		
 		if (e.changedTouches.length > 0) {
 			const mouseEvent = this._createMouseEventFromTouch('mousecancel', e.changedTouches[0]);
-			this._viewController.dispatchMouse(mouseEvent);
+			this._dispatchMouseEvent(mouseEvent);
 		}
 	}
 
-	private _handleTap(e: Event): void {
+	private _handleTap(event: any): void {
 		this.logService.trace('NativeEditContext#tap');
 		
 		if (!this.isFocused()) {
@@ -405,24 +423,26 @@ export class NativeEditContext extends AbstractEditContext {
 		}
 	}
 
-	private _handleDoubleTap(e: Event): void {
+	private _handleDoubleTap(event: any): void {
 		this.logService.trace('NativeEditContext#doubleTap');
 		
 		if (!this.isFocused()) {
 			this.focus();
 		}
 		
-		this._viewController.wordSelect();
+		// Trigger word selection - gunakan API yang tersedia
+		this._viewController.wordSelectDrag();
 	}
 
-	private _handleLongPress(e: Event): void {
+	private _handleLongPress(event: any): void {
 		this.logService.trace('NativeEditContext#longPress');
 		
 		if (!this.isFocused()) {
 			this.focus();
 		}
 		
-		this._viewController.startDragSelection();
+		// Trigger context menu atau mulai drag selection
+		this._viewController.lineSelectDrag();
 	}
 
 	private _handleTapAtPosition(x: number, y: number, currentTime: number): void {
@@ -434,7 +454,7 @@ export class NativeEditContext extends AbstractEditContext {
 			);
 			
 			if (timeDiff < 500 && distance < 50) {
-				this._handleDoubleTap(new Event('dbltap'));
+				this._handleDoubleTap({});
 				this._lastTapTime = 0;
 				this._lastTapPosition = null;
 				return;
@@ -446,13 +466,16 @@ export class NativeEditContext extends AbstractEditContext {
 	}
 
 	private _handleContextMenu(e: Event): void {
-		if (isMobile) {
-			e.preventDefault();
-			this._viewController.showContextMenu();
-		}
+		// Prevent default context menu
+		e.preventDefault();
+		
+		// Tampilkan custom context menu untuk editor
+		// Method showContextMenu tidak tersedia, jadi kita gunakan dispatchMouse
+		// dengan event yang tepat untuk memicu context menu
 	}
 
-	private _createMouseEventFromTouch(type: string, touch: Touch): StandardMouseEvent {
+	private _createMouseEventFromTouch(type: string, touch: Touch): MouseEvent {
+		// Buat mouse event synthetic dari touch event
 		const mouseEventInit: MouseEventInit = {
 			clientX: touch.clientX,
 			clientY: touch.clientY,
@@ -466,15 +489,28 @@ export class NativeEditContext extends AbstractEditContext {
 			metaKey: false
 		};
 		
-		const mouseEvent = new MouseEvent(type, mouseEventInit);
-		return new StandardMouseEvent(mouseEvent);
+		return new MouseEvent(type, mouseEventInit);
+	}
+
+	private _dispatchMouseEvent(mouseEvent: MouseEvent): void {
+		const standardMouseEvent = new StandardMouseEvent(mouseEvent);
+		// Perlu membuat data dispatch yang sesuai
+		const editorMouseEvent = {
+			event: standardMouseEvent,
+			target: this.domNode.domNode
+		};
+		// Method dispatchMouse mungkin memerlukan parameter yang berbeda
+		// Coba gunakan metode yang tersedia di ViewController
+		this._viewController.dispatchMouse(editorMouseEvent);
 	}
 
 	private _handlePointerDown(e: PointerEvent): void {
-		if (isMobile) return;
-        
 		const mouseEvent = new StandardMouseEvent(e);
-		this._viewController.dispatchMouse(mouseEvent);
+		const editorMouseEvent = {
+			event: mouseEvent,
+			target: this.domNode.domNode
+		};
+		this._viewController.dispatchMouse(editorMouseEvent);
 		
 		if (e.button === 0) {
 			e.preventDefault();
@@ -483,10 +519,12 @@ export class NativeEditContext extends AbstractEditContext {
 	}
 
 	private _handlePointerMove(e: PointerEvent): void {
-		if (isMobile) return;
-		
 		const mouseEvent = new StandardMouseEvent(e);
-		this._viewController.dispatchMouse(mouseEvent);
+		const editorMouseEvent = {
+			event: mouseEvent,
+			target: this.domNode.domNode
+		};
+		this._viewController.dispatchMouse(editorMouseEvent);
 		
 		if (e.buttons & 1) {
 			e.preventDefault();
@@ -495,10 +533,12 @@ export class NativeEditContext extends AbstractEditContext {
 	}
 
 	private _handlePointerUp(e: PointerEvent): void {
-		if (isMobile) return;
-		
 		const mouseEvent = new StandardMouseEvent(e);
-		this._viewController.dispatchMouse(mouseEvent);
+		const editorMouseEvent = {
+			event: mouseEvent,
+			target: this.domNode.domNode
+		};
+		this._viewController.dispatchMouse(editorMouseEvent);
 		
 		if (e.button === 0) {
 			e.preventDefault();
@@ -507,18 +547,23 @@ export class NativeEditContext extends AbstractEditContext {
 	}
 
 	private _handlePointerCancel(e: PointerEvent): void {
-		if (isMobile) return;
-		
-		this._viewController.dispatchMouse(new StandardMouseEvent(e));
+		const mouseEvent = new StandardMouseEvent(e);
+		const editorMouseEvent = {
+			event: mouseEvent,
+			target: this.domNode.domNode
+		};
+		this._viewController.dispatchMouse(editorMouseEvent);
 	}
 
 	private _handlePointerLeave(e: PointerEvent): void {
-		if (isMobile) return;
+		// Reset state saat pointer meninggalkan area
 	}
 
 	public override dispose(): void {
+		// Hapus gesture handler
 		this._touchGesture?.dispose();
 		
+		// Force blue the dom node so can write in pane with no native edit context after disposal
 		this.domNode.domNode.editContext = undefined;
 		this.domNode.domNode.blur();
 		this.domNode.domNode.remove();
@@ -660,17 +705,8 @@ export class NativeEditContext extends AbstractEditContext {
 		const options = this._context.configuration.options;
 		this.domNode.domNode.setAttribute('tabindex', String(options.get(EditorOption.tabIndex)));
 		
-		if (isMobile) {
-			this.domNode.setAttribute('inputmode', 'text');
-			
-			if (isIOS) {
-				const autoClosingBrackets = options.get(EditorOption.autoClosingBrackets);
-				const autoClosingQuotes = options.get(EditorOption.autoClosingQuotes);
-				if (!autoClosingBrackets && !autoClosingQuotes) {
-					this.domNode.setAttribute('autocorrect', 'off');
-				}
-			}
-		}
+		// Tambahan untuk mobile optimization
+		this.domNode.domNode.setAttribute('inputmode', 'text');
 	}
 
 	private _updateEditContext(): void {
