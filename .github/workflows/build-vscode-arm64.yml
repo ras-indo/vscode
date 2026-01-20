@@ -25,10 +25,8 @@ jobs:
 
       - name: Verify Node & npm
         run: |
-          echo "=== node & npm versions ==="
           node -v
           npm -v
-          echo "=== uname -a ==="
           uname -a
 
       - name: Install system dependencies (including Kerberos dev headers)
@@ -53,16 +51,11 @@ jobs:
             ca-certificates \
             git \
             curl
-          gcc --version || true
-          g++ --version || true
-          python3 --version || true
 
       - name: Clean workspace (remove stray node_modules only) and npm cache
         run: |
-          echo "Removing node_modules only; do NOT remove package-lock.json if present"
           rm -rf node_modules || true
           npm cache clean --force || true
-          # attempt to remove stubborn dir that caused ENOTEMPTY previously
           rm -rf node_modules/native-keymap || true
 
       - name: Install npm dependencies (use ci when lockfile exists)
@@ -75,9 +68,49 @@ jobs:
             npm install --prefer-offline --no-audit --no-fund
           fi
 
-      - name: Build VS Code (linux-arm64)
+      - name: Create 16GB swap (helps avoid OOM on hosted runner)
         run: |
-          npm run gulp -- vscode-linux-arm64-min
+          set -eux
+          SWAPFILE=/swapfile
+          # create swap only if not exists
+          if [ ! -f ${SWAPFILE} ]; then
+            sudo fallocate -l 16G ${SWAPFILE} || sudo dd if=/dev/zero of=${SWAPFILE} bs=1M count=16384
+            sudo chmod 600 ${SWAPFILE}
+            sudo mkswap ${SWAPFILE}
+          fi
+          sudo swapon ${SWAPFILE} || true
+          free -h
+
+      - name: Build VS Code (try minified then fallback to non-minified)
+        shell: bash
+        run: |
+          set -o pipefail
+          # Increase V8 heap to 12GB (if runner can support via swap)
+          NODE_HEAP="--max-old-space-size=12288"
+          echo "Attempting minified build (node ${NODE_HEAP})..."
+          if node ${NODE_HEAP} ./node_modules/gulp/bin/gulp.js vscode-linux-arm64-min; then
+            echo "Minified build succeeded."
+          else
+            echo "Minified build failed — attempting non-minified build."
+            # try a less memory intensive build
+            if node ${NODE_HEAP} ./node_modules/gulp/bin/gulp.js vscode-linux-arm64; then
+              echo "Non-minified build succeeded."
+            else
+              echo "Both minified and non-minified builds failed. Dumping diagnostics..."
+              free -h || true
+              ps aux --sort=-%mem | head -n 20 || true
+              ls -la .build || true
+              # fail the job
+              exit 1
+            fi
+          fi
+
+      - name: Cleanup swap
+        if: always()
+        run: |
+          sudo swapoff /swapfile || true
+          sudo rm -f /swapfile || true
+          free -h || true
 
       - name: Package build output
         run: |
