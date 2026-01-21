@@ -3,8 +3,8 @@ name: Build VSCode Server Arm64
 on:
   push:
     branches:
-      - main # Ubah sesuai nama branch utama Anda
-  workflow_dispatch: # Memungkinkan trigger manual
+      - main
+  workflow_dispatch:
 
 jobs:
   build:
@@ -17,26 +17,34 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
+          # Sangat penting: VS Code harus menggunakan versi Node yang sesuai agar build tidak error
           node-version-file: '.nvmrc'
           cache: 'npm'
 
-      - name: Install Dependencies
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential g++-aarch64-linux-gnu gcc-aarch64-linux-gnu
-          npm install
+          # Tambahkan libkrb5-dev untuk memperbaiki error kerberos/gssapi
+          # Tambahkan libx11-dev dan dependensi UI lainnya karena script build tetap mengeceknya
+          sudo apt-get install -y build-essential g++-aarch64-linux-gnu gcc-aarch64-linux-gnu \
+            libkrb5-dev libx11-dev libxkbfile-dev libsecret-1-dev
+
+      - name: Install NPM Dependencies
+        run: |
+          # Gunakan npm ci untuk install yang lebih bersih dan stabil di CI
+          npm ci
 
       - name: Build VSCode Server (Linux Arm64)
         run: |
-          # Menggunakan gulp task khusus untuk Remote Extension Host (REH)
+          # Memastikan build menggunakan toolchain arm64 untuk native modules
           npx gulp vscode-reh-linux-arm64-min
         env:
           NODE_OPTIONS: "--max-old-space-size=8192"
+          # Kadang diperlukan untuk memberi tahu node-gyp target arsitekturnya
+          npm_config_arch: arm64
 
       - name: Archive Build Result
         run: |
-          # Hasil build biasanya berada satu folder di atas atau di folder 'build'
-          # Kita pindahkan ke folder terpisah untuk di-compress
           cd ..
           tar -czvf vscode-server-linux-arm64.tar.gz vscode-reh-linux-arm64
 
@@ -45,4 +53,3 @@ jobs:
         with:
           name: vscode-server-linux-arm64
           path: ../vscode-server-linux-arm64.tar.gz
-          retention-days: 7
