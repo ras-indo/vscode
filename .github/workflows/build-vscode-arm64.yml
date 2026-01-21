@@ -1,4 +1,4 @@
-name: Build VS Code ARM64 (auto-package & upload)
+name: Build VS Code ARM64
 
 on:
   push:
@@ -13,29 +13,25 @@ jobs:
       NODE_OPTIONS: "--max-old-space-size=12288"
 
     steps:
+      # 1. Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: true
 
-      - name: Setup Node.js 22
+      # 2. Setup Node.js 22.x
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.x
+          node-version: '22.x'
           cache: npm
 
-      - name: Verify Node & npm
-        run: |
-          node -v
-          npm -v
-          uname -a
-
+      # 3. Install system dependencies
       - name: Install system dependencies
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
             build-essential \
-            make \
             g++ \
             python3 \
             python3-dev \
@@ -51,141 +47,73 @@ jobs:
             rpm \
             ca-certificates \
             git \
-            curl
+            curl \
+            wget \
+            unzip
 
-      - name: Restore/cache node_modules & gulp cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.npm
-            node_modules
-            .build
-            .gulp-cache
-          key: vscode-arm64-${{ hashFiles('package-lock.json') }}
-
-      - name: Clean workspace (avoid leftover/native-node issues)
+      # 4. Verify Node & npm
+      - name: Verify Node & npm
         run: |
-          # remove only node_modules leftovers that might cause ENOTEMPTY
+          node -v
+          npm -v
+          uname -a
+
+      # 5. Clean node_modules & npm cache
+      - name: Clean workspace
+        run: |
           rm -rf node_modules || true
-          rm -rf node_modules/native-keymap || true
           npm cache clean --force || true
 
+      # 6. Install npm dependencies
       - name: Install npm dependencies
         run: |
           if [ -f package-lock.json ]; then
-            echo "package-lock.json found → running npm ci"
             npm ci --prefer-offline --no-audit --no-fund
           else
-            echo "package-lock.json NOT found → running npm install"
             npm install --prefer-offline --no-audit --no-fund
           fi
 
-      - name: Create 8GB swap (reduce OOM risk)
+      # 7. Optional: create swap (avoid OOM)
+      - name: Create 16GB swap (optional)
         run: |
-          set -eux
           SWAPFILE=/swapfile
-          if [ ! -f "${SWAPFILE}" ]; then
-            sudo fallocate -l 8G "${SWAPFILE}" || sudo dd if=/dev/zero of="${SWAPFILE}" bs=1M count=8192
-            sudo chmod 600 "${SWAPFILE}"
-            sudo mkswap "${SWAPFILE}"
+          if [ ! -f ${SWAPFILE} ]; then
+            sudo fallocate -l 16G ${SWAPFILE} || sudo dd if=/dev/zero of=${SWAPFILE} bs=1M count=16384
+            sudo chmod 600 ${SWAPFILE}
+            sudo mkswap ${SWAPFILE}
           fi
-          sudo swapon "${SWAPFILE}" || true
+          sudo swapon ${SWAPFILE} || true
           free -h
 
-      - name: Build VS Code (non-minified)
-        shell: bash
+      # 8. Build VS Code (non-minified)
+      - name: Build VS Code
         run: |
-          set -o pipefail
-          echo "Starting non-minified build (vscode-linux-arm64)..."
-          node ./node_modules/gulp/bin/gulp.js vscode-linux-arm64 || {
-            echo "Build failed. Dumping diagnostics..."
-            free -h || true
-            ps aux --sort=-%mem | head -n 30 || true
-            ls -lah .build || true
-            exit 1
-          }
+          node ./node_modules/gulp/bin/gulp.js vscode-linux-arm64
 
-      - name: Inspect basic output
+      # 9. Package Linux ARM64 (buat executable biner)
+      - name: Package Linux ARM64
         run: |
-          echo "Top-level files:"
-          ls -lah
-          echo ".build top-level:"
-          ls -lah .build || true
-          echo "Top 20 largest files:"
-          find . -type f -printf "%s\t%p\n" | sort -nr | head -n 20 || true
+          node ./node_modules/gulp/bin/gulp.js package-linux-arm64
 
-      - name: Locate and package binaries (auto)
-        shell: bash
+      # 10. Compress the packaged binary
+      - name: Compress build output
         run: |
-          set -euo pipefail
-          echo "Searching for candidate packaged outputs..."
-          patterns=(
-            "*vscode*.tar.gz"
-            "*.tar.gz"
-            "*.deb"
-            "*vscode-*-arm64*"
-            "*vscode_server*"
-            "*vscode-server*"
-            "code"
-            "out/**"
-          )
-
-          tmpfile=found-artifacts.txt
-          : > "$tmpfile"
-
-          for p in "${patterns[@]}"; do
-            # find files matching pattern (case-insensitive)
-            find . -type f -iname "$p" -print >> "$tmpfile" || true
-          done
-
-          # also capture files > 1MB as potential candidates
-          find . -type f -size +1M -print >> "$tmpfile" || true
-
-          sort -u "$tmpfile" -o "$tmpfile" || true
-
-          echo "Candidates found:"
-          sed -n '1,200p' "$tmpfile" || true
-
-          rm -rf out-artifacts || true
-          mkdir -p out-artifacts
-
-          count=0
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            case "$f" in
-              ./node_modules/*|*/.git/*|*/.github/*) continue ;;
-            esac
-            if [ -f "$f" ]; then
-              # preserve relative path inside out-artifacts
-              mkdir -p "out-artifacts/$(dirname "$f")"
-              cp --parents "$f" out-artifacts/ || true
-              count=$((count+1))
-            fi
-          done < "$tmpfile"
-
-          echo "Copied $count candidate files into out-artifacts/"
-
-          if [ "$count" -gt 0 ]; then
-            tar -czf vscode-linux-arm64-binaries.tar.gz -C out-artifacts .
-            echo "Created vscode-linux-arm64-binaries.tar.gz (from detected artifacts)"
+          if [ -d ".build/linux-arm64" ]; then
+            tar -czf vscode-linux-arm64.tar.gz -C .build/linux-arm64 .
           else
-            echo "No explicit packaged binaries detected; falling back to archiving .build if present"
-            if [ -d ".build" ]; then
-              tar -czf vscode-linux-arm64-binaries.tar.gz -C .build .
-              echo "Created vscode-linux-arm64-binaries.tar.gz (from .build)"
-            else
-              echo "Nothing to package; aborting."
-              ls -lah || true
-              exit 1
-            fi
+            echo "ERROR: .build/linux-arm64 missing!" >&2
+            ls -la .build || true
+            exit 1
           fi
 
+      # 11. Upload artifact
       - name: Upload compressed build artifact
         uses: actions/upload-artifact@v4
         with:
           name: vscode-linux-arm64
-          path: vscode-linux-arm64-binaries.tar.gz
+          path: vscode-linux-arm64.tar.gz
 
+      # 12. Cleanup swap
       - name: Cleanup swap
         if: always()
         run: |
